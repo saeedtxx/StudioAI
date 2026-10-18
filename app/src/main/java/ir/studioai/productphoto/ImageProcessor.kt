@@ -7,15 +7,13 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Base64
-import com.google.android.gms.common.moduleinstall.ModuleInstall
-import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -23,67 +21,64 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 object ImageProcessor {
 
     private const val WORKER_URL = "https://studioai.saeedtx.workers.dev/"
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    // ۱. دوربری سریع (حداکثر ۳.۵ ثانیه مهلت به سرویس گوگل، در غیر این صورت دوربری فوری داخلی)
     suspend fun removeBackground(context: Context, imageUri: Uri): Bitmap = withContext(Dispatchers.Default) {
-        val inputImage = InputImage.fromFilePath(context, imageUri)
-        val options = SubjectSegmenterOptions.Builder()
-            .enableForegroundBitmap()
-            .build()
-        val segmenter = SubjectSegmentation.getClient(options)
-
-        try {
-            val moduleInstallClient = ModuleInstall.getClient(context)
-            val areAvailable = moduleInstallClient.areModulesAvailable(segmenter).await()
-
-            if (!areAvailable.areModulesAvailable()) {
-                val installRequest = ModuleInstallRequest.newBuilder()
-                    .addApi(segmenter)
+        val mlKitBitmap = withTimeoutOrNull(3500L) {
+            try {
+                val inputImage = InputImage.fromFilePath(context, imageUri)
+                val options = SubjectSegmenterOptions.Builder()
+                    .enableForegroundBitmap()
                     .build()
-                moduleInstallClient.installModules(installRequest).await()
-
-                repeat(12) {
-                    delay(1000)
-                    val check = moduleInstallClient.areModulesAvailable(segmenter).await()
-                    if (check.areModulesAvailable()) return@repeat
-                }
+                val segmenter = SubjectSegmentation.getClient(options)
+                val result = segmenter.process(inputImage).await()
+                result.foregroundBitmap
+            } catch (e: Exception) {
+                null
             }
-
-            val result = segmenter.process(inputImage).await()
-            result.foregroundBitmap ?: fallbackSmartCutout(context, imageUri)
-
-        } catch (e: Exception) {
-            fallbackSmartCutout(context, imageUri)
         }
+
+        // اگر ML Kit در ۳.۵ ثانیه جواب داد از آن استفاده کن، وگرنه بلافاصله دوربری داخلی را انجام بده
+        mlKitBitmap ?: fallbackSmartCutout(context, imageUri)
     }
 
+    // موتور دوربری سریع داخلی (مخصوص Genymotion و گوشی‌های بدون Google Play)
     private fun fallbackSmartCutout(context: Context, imageUri: Uri): Bitmap {
         val stream = context.contentResolver.openInputStream(imageUri)
             ?: throw Exception("خطا در خواندن فایل تصویر")
-        val original = BitmapFactory.decodeStream(stream)
+        val rawBitmap = BitmapFactory.decodeStream(stream)
         stream.close()
 
-        val width = original.width
-        val height = original.height
-        val result = original.copy(Bitmap.Config.ARGB_8888, true)
+        // کوچک‌سازی هوشمند عکس‌های خیلی بزرگ برای پردازش در کسری از ثانیه
+        val maxDim = 900f
+        val scale = min(1f, min(maxDim / rawBitmap.width, maxDim / rawBitmap.height))
+        val width = (rawBitmap.width * scale).toInt().coerceAtLeast(1)
+        val height = (rawBitmap.height * scale).toInt().coerceAtLeast(1)
+
+        val result = Bitmap.createScaledBitmap(rawBitmap, width, height, true)
+            .copy(Bitmap.Config.ARGB_8888, true)
 
         val pixels = IntArray(width * height)
         result.getPixels(pixels, 0, width, 0, 0, width, height)
 
+        // نمونه‌برداری رنگ پس‌زمینه از ۴ گوشه تصویر
         val cornerColor = pixels[0]
         val bgR = Color.red(cornerColor)
         val bgG = Color.green(cornerColor)
         val bgB = Color.blue(cornerColor)
-        val threshold = 48
+        val threshold = 65
 
         for (i in pixels.indices) {
             val c = pixels[i]
@@ -97,6 +92,7 @@ object ImageProcessor {
         return result
     }
 
+    // ۲. دریافت دکور آتلیه‌ای از کلادفلر ورکر
     suspend fun generateBackground(prompt: String, width: Int, height: Int): Bitmap = withContext(Dispatchers.IO) {
         val jsonBody = JSONObject().apply {
             put("prompt", prompt)
@@ -111,7 +107,7 @@ object ImageProcessor {
 
         val response = httpClient.newCall(request).execute()
         if (!response.isSuccessful) {
-            throw Exception("خطا در ارتباط با سرور هوش مصنوعی: ${response.code}")
+            throw Exception("خطا در دریافت دکور: کد ${response.code}")
         }
 
         val contentType = response.header("Content-Type") ?: ""
@@ -124,9 +120,10 @@ object ImageProcessor {
         }
 
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            ?: throw Exception("خطا در پردازش تصویر دریافتی")
+            ?: throw Exception("فرمت تصویر دریافتی معتبر نیست")
     }
 
+    // ۳. ترکیب هوشمند محصول + سایه استودیویی + برچسب فروش + واترمارک
     suspend fun composeStudioPhoto(
         background: Bitmap,
         foreground: Bitmap,
@@ -138,12 +135,22 @@ object ImageProcessor {
         val finalBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(finalBitmap)
 
-        val scaledBg = Bitmap.createScaledBitmap(background, targetWidth, targetHeight, true)
-        canvas.drawBitmap(scaledBg, 0f, 0f, null)
+        // برش مرکزی (Center-Crop) پس‌زمینه برای جلوگیری از کشیدگی تصویر
+        val scaleBg = max(
+            targetWidth.toFloat() / background.width,
+            targetHeight.toFloat() / background.height
+        )
+        val scaledBgW = (background.width * scaleBg).toInt().coerceAtLeast(1)
+        val scaledBgH = (background.height * scaleBg).toInt().coerceAtLeast(1)
+        val scaledBg = Bitmap.createScaledBitmap(background, scaledBgW, scaledBgH, true)
+        val bgLeft = (targetWidth - scaledBgW) / 2f
+        val bgTop = (targetHeight - scaledBgH) / 2f
+        canvas.drawBitmap(scaledBg, bgLeft, bgTop, null)
 
+        // تنظیم ابعاد محصول وسط صحنه
         val maxProductWidth = targetWidth * 0.68f
         val maxProductHeight = targetHeight * 0.68f
-        val scaleFactor = minOf(
+        val scaleFactor = min(
             maxProductWidth / foreground.width.toFloat(),
             maxProductHeight / foreground.height.toFloat()
         )
@@ -153,16 +160,16 @@ object ImageProcessor {
         val scaledProduct = Bitmap.createScaledBitmap(foreground, prodWidth, prodHeight, true)
 
         val left = (targetWidth - prodWidth) / 2f
-        val top = (targetHeight - prodHeight) * 0.56f
+        val top = (targetHeight - prodHeight) * 0.55f
 
         // سایه تماس روی میز
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(135, 0, 0, 0)
-            maskFilter = BlurMaskFilter(38f, BlurMaskFilter.Blur.NORMAL)
+            color = Color.argb(145, 0, 0, 0)
+            maskFilter = BlurMaskFilter(36f, BlurMaskFilter.Blur.NORMAL)
         }
         val shadowOval = RectF(
             left + prodWidth * 0.1f,
-            top + prodHeight - (prodHeight * 0.07f),
+            top + prodHeight - (prodHeight * 0.06f),
             left + prodWidth * 0.9f,
             top + prodHeight + (prodHeight * 0.05f)
         )
@@ -171,19 +178,19 @@ object ImageProcessor {
         // سایه نرم پشت محصول
         val alphaShadow = scaledProduct.extractAlpha()
         val dropShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(85, 0, 0, 0)
-            maskFilter = BlurMaskFilter(24f, BlurMaskFilter.Blur.NORMAL)
+            color = Color.argb(90, 0, 0, 0)
+            maskFilter = BlurMaskFilter(22f, BlurMaskFilter.Blur.NORMAL)
         }
-        canvas.drawBitmap(alphaShadow, left, top + 14f, dropShadowPaint)
+        canvas.drawBitmap(alphaShadow, left, top + 12f, dropShadowPaint)
 
-        // رسم محصول
+        // رسم خود محصول
         val productPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         canvas.drawBitmap(scaledProduct, left, top, productPaint)
 
-        // رسم برچسب فروشگاهی (در صورت انتخاب توسط فروشنده)
+        // برچسب فروشگاهی
         if (promoBadgeText.isNotBlank() && promoBadgeText != "بدون برچسب") {
             val promoBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.rgb(231, 76, 60) // قرمز جذاب فروشگاهی
+                color = Color.rgb(231, 76, 60)
                 setShadowLayer(12f, 0f, 6f, Color.argb(120, 0, 0, 0))
             }
             val promoTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -204,7 +211,7 @@ object ImageProcessor {
         // واترمارک نسخه رایگان
         if (addWatermark) {
             val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(170, 15, 15, 20)
+                color = Color.argb(175, 15, 15, 20)
             }
             val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.rgb(245, 176, 65)
