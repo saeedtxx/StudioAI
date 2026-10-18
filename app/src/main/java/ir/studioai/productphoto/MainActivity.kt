@@ -1,11 +1,15 @@
 package ir.studioai.productphoto
 
+import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,14 +25,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.launch
 
 data class StudioPreset(
     val id: String,
@@ -42,7 +48,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // راست‌چین کردن کل محیط برنامه برای زبان فارسی
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                 MaterialTheme(
                     colorScheme = darkColorScheme(
@@ -60,19 +65,33 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun StudioAppScreen() {
-    var coins by remember { mutableIntStateOf(2) } // ۲ سکه هدیه اولیه
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs = remember { context.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE) }
+
+    var coins by remember { mutableIntStateOf(prefs.getInt("coins", 2)) }
+    var isVip by remember { mutableStateOf(prefs.getBoolean("is_vip", false)) }
+
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var resultBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var selectedAspectRatio by remember { mutableStateOf("۱:۱ پست اینستاگرام") }
     var showPaywall by remember { mutableStateOf(false) }
     var isProcessing by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf("") }
+
+    fun updateCoins(newCoins: Int, vipUpgrade: Boolean = isVip) {
+        coins = newCoins
+        isVip = vipUpgrade
+        prefs.edit().putInt("coins", newCoins).putBoolean("is_vip", vipUpgrade).apply()
+    }
 
     val presets = remember {
         listOf(
-            StudioPreset("marble", "سنگ مرمر لوکس", "ویژه عطر و جواهرات", "luxury white marble podium, studio lighting, soft shadows, bokeh", Color(0xFF2E4053)),
-            StudioPreset("wood", "میز چوب گردو", "ویژه کیف، کفش و ساعت", "warm dark walnut wooden table, cinematic lighting, cozy background", Color(0xFF6E2C00)),
-            StudioPreset("nature", "برگ و قطرات آب", "ویژه آرایشی و بهداشتی", "tropical green leaves, water splashes, morning sunlight, fresh", Color(0xFF145A32)),
-            StudioPreset("digikala", "سفید استاندارد", "ویژه دیجی‌کالا و باسلام", "pure white studio background, natural contact shadow under product", Color(0xFF424949)),
-            StudioPreset("neon", "نئون سایبرپانک", "ویژه گجت و موبایل", "dark studio with purple and blue neon rim lighting, modern tech", Color(0xFF4A235A))
+            StudioPreset("marble", "سنگ مرمر لوکس", "ویژه عطر و جواهرات", "luxury white marble podium table, soft studio lighting, elegant bokeh background", Color(0xFF2E4053)),
+            StudioPreset("wood", "میز چوب گردو", "ویژه کیف، کفش و ساعت", "warm dark walnut wooden table surface, cinematic studio lighting, cozy background", Color(0xFF6E2C00)),
+            StudioPreset("nature", "برگ و قطرات آب", "ویژه آرایشی و بهداشتی", "natural stone podium with tropical green leaves, water droplets, fresh morning sunlight", Color(0xFF145A32)),
+            StudioPreset("digikala", "سفید استاندارد", "ویژه دیجی‌کالا و باسلام", "pure clean white minimalist studio table background, soft commercial lighting", Color(0xFF424949)),
+            StudioPreset("neon", "نئون سایبرپانک", "ویژه گجت و موبایل", "dark sleek matte podium with purple and blue neon rim lighting, tech studio", Color(0xFF4A235A))
         )
     }
     var selectedPreset by remember { mutableStateOf(presets.first()) }
@@ -80,7 +99,10 @@ fun StudioAppScreen() {
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        if (uri != null) selectedImageUri = uri
+        if (uri != null) {
+            selectedImageUri = uri
+            resultBitmap = null
+        }
     }
 
     Scaffold(
@@ -101,13 +123,12 @@ fun StudioAppScreen() {
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "طراحی عکس محصول در ۳ ثانیه",
-                        color = Color(0xFF9E9EAE),
+                        text = if (isVip) "✨ حساب VIP فعال (بدون واترمارک)" else "طراحی عکس محصول در چند ثانیه",
+                        color = if (isVip) Color(0xFFF5B041) else Color(0xFF9E9EAE),
                         fontSize = 12.sp
                     )
                 }
 
-                // دکمه موجودی سکه و خرید اشتراک
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
@@ -137,7 +158,7 @@ fun StudioAppScreen() {
                 .padding(horizontal = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // ۱. بوم نمایش محصول
+            // ۱. بوم نمایش محصول و نتیجه نهایی
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -145,80 +166,122 @@ fun StudioAppScreen() {
                     .clip(RoundedCornerShape(24.dp))
                     .background(Color(0xFF1C1C26))
                     .border(1.dp, Color(0xFF2E2E3E), RoundedCornerShape(24.dp))
-                    .clickable { galleryLauncher.launch("image/*") },
+                    .clickable(enabled = !isProcessing) { galleryLauncher.launch("image/*") },
                 contentAlignment = Alignment.Center
             ) {
-                if (selectedImageUri != null) {
-                    AsyncImage(
-                        model = selectedImageUri,
-                        contentDescription = "عکس محصول",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp),
-                        contentScale = ContentScale.Fit
-                    )
-                    // دکمه تغییر عکس
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.6f),
-                        shape = RoundedCornerShape(50),
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(12.dp)
-                            .clickable { galleryLauncher.launch("image/*") }
-                    ) {
-                        Text(
-                            text = "تغییر عکس",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                when {
+                    resultBitmap != null -> {
+                        Image(
+                            bitmap = resultBitmap!!.asImageBitmap(),
+                            contentDescription = "تصویر نهایی",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(8.dp)
+                                .clip(RoundedCornerShape(16.dp)),
+                            contentScale = ContentScale.Fit
                         )
                     }
-                } else {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(
+                    selectedImageUri != null -> {
+                        AsyncImage(
+                            model = selectedImageUri,
+                            contentDescription = "عکس محصول",
                             modifier = Modifier
-                                .size(72.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF282838)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("📸", fontSize = 32.sp)
+                                .fillMaxSize()
+                                .padding(16.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                    else -> {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF282838)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("📸", fontSize = 32.sp)
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "انتخاب عکس محصول از گالری",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "پس‌زمینه به صورت خودکار حذف و نورپردازی می‌شود",
+                                color = Color(0xFF8E8E9E),
+                                fontSize = 12.sp
+                            )
                         }
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "انتخاب عکس محصول از گالری",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "پس‌زمینه به صورت خودکار حذف و نورپردازی می‌شود",
-                            color = Color(0xFF8E8E9E),
-                            fontSize = 12.sp
-                        )
                     }
                 }
 
+                // دکمه‌های شناور بالای تصویر
+                if (selectedImageUri != null && !isProcessing) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (resultBitmap != null && !isVip) {
+                            Surface(
+                                color = Color(0xFFF5B041),
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier.clickable { showPaywall = true }
+                            ) {
+                                Text(
+                                    text = "👑 حذف واترمارک",
+                                    color = Color(0xFF0F0F14),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.65f),
+                            shape = RoundedCornerShape(50),
+                            modifier = Modifier.clickable { galleryLauncher.launch("image/*") }
+                        ) {
+                            Text(
+                                text = "عکس جدید",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+
+                // لایه لودینگ مرحله‌به‌مرحله
                 if (isProcessing) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.75f)),
+                            .background(Color.Black.copy(alpha = 0.8f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator(color = Color(0xFFF5B041))
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text("در حال دوربری و ساخت دکور آتلیه‌ای...", color = Color.White)
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text(
+                                text = statusMessage,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // ۲. انتخاب سایز استاندارد پلتفرم‌های ایرانی
+            // ۲. انتخاب ابعاد استاندارد
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -235,7 +298,7 @@ fun StudioAppScreen() {
                                 color = if (isSelected) Color(0xFFF5B041) else Color.Transparent,
                                 shape = RoundedCornerShape(12.dp)
                             )
-                            .clickable { selectedAspectRatio = ratio }
+                            .clickable(enabled = !isProcessing) { selectedAspectRatio = ratio }
                             .padding(vertical = 10.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -249,9 +312,9 @@ fun StudioAppScreen() {
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // ۳. لیست دکورهای آماده (بدون نیاز به نوشتن پرامپت)
+            // ۳. لیست دکورهای آتلیه
             Text(
                 text = "انتخاب دکور و نورپردازی آتلیه:",
                 color = Color.White,
@@ -277,7 +340,7 @@ fun StudioAppScreen() {
                                 color = if (isSelected) Color(0xFFF5B041) else Color.Transparent,
                                 shape = RoundedCornerShape(16.dp)
                             )
-                            .clickable { selectedPreset = preset }
+                            .clickable(enabled = !isProcessing) { selectedPreset = preset }
                             .padding(12.dp)
                     ) {
                         Text(
@@ -296,40 +359,110 @@ fun StudioAppScreen() {
                 }
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // ۴. دکمه اصلی ساخت عکس
-            Button(
-                onClick = {
-                    if (selectedImageUri == null) {
-                        galleryLauncher.launch("image/*")
-                    } else if (coins <= 0) {
-                        showPaywall = true
-                    } else {
-                        coins -= 1
-                        isProcessing = true
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF5B041))
+            // ۴. دکمه‌های ساخت عکس و دانلود در گالری
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = if (selectedImageUri == null) "ابتدا عکس محصول را انتخاب کنید"
-                    else "✨ ساخت عکس آتلیه‌ای (۱ سکه)",
-                    color = Color(0xFF0F0F14),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
+                Button(
+                    onClick = {
+                        if (selectedImageUri == null) {
+                            galleryLauncher.launch("image/*")
+                        } else if (coins <= 0) {
+                            showPaywall = true
+                        } else {
+                            scope.launch {
+                                try {
+                                    isProcessing = true
+                                    val (targetW, targetH) = when {
+                                        selectedAspectRatio.contains("۹:۱۶") -> 768 to 1344
+                                        selectedAspectRatio.contains("۴:۵") -> 896 to 1120
+                                        else -> 1024 to 1024
+                                    }
+
+                                    statusMessage = "✂️ در حال دوربری هوشمند محصول..."
+                                    val cutout = ImageProcessor.removeBackground(context, selectedImageUri!!)
+
+                                    statusMessage = "🎨 در حال ساخت دکور ${selectedPreset.title}..."
+                                    val bg = ImageProcessor.generateBackground(selectedPreset.prompt, targetW, targetH)
+
+                                    statusMessage = "✨ در حال نورپردازی و سایه‌زنی استودیویی..."
+                                    val finalImg = ImageProcessor.composeStudioPhoto(
+                                        background = bg,
+                                        foreground = cutout,
+                                        targetWidth = targetW,
+                                        targetHeight = targetH,
+                                        addWatermark = !isVip
+                                    )
+
+                                    resultBitmap = finalImg
+                                    updateCoins(coins - 1)
+                                } catch (e: Exception) {
+                                    Toast.makeText(
+                                        context,
+                                        "خطا: ${e.localizedMessage ?: "دوباره تلاش کنید"}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } finally {
+                                    isProcessing = false
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isProcessing,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF5B041))
+                ) {
+                    Text(
+                        text = when {
+                            selectedImageUri == null -> "انتخاب عکس محصول"
+                            resultBitmap != null -> "🔄 ساخت مجدد (۱ سکه)"
+                            else -> "✨ ساخت عکس آتلیه‌ای (۱ سکه)"
+                        },
+                        color = Color(0xFF0F0F14),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+
+                // دکمه دانلود (وقتی عکس آماده شد نمایش داده می‌شود)
+                if (resultBitmap != null) {
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val saved = ImageProcessor.saveToGallery(context, resultBitmap!!)
+                                if (saved) {
+                                    Toast.makeText(context, "✅ در گالری (پوشه StudioAI) ذخیره شد!", Toast.LENGTH_LONG).show()
+                                } else {
+                                    Toast.makeText(context, "خطا در ذخیره‌سازی تصویر", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        enabled = !isProcessing,
+                        modifier = Modifier.height(54.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ECC71))
+                    ) {
+                        Text(
+                            text = "📥 ذخیره",
+                            color = Color(0xFF0F0F14),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
         }
     }
 
-    // ۵. مودال فروش اشتراک و سکه (Paywall پول‌ساز)
+    // ۵. دیالوگ خرید اشتراک و سکه
     if (showPaywall) {
         AlertDialog(
             onDismissRequest = { showPaywall = false },
@@ -345,27 +478,27 @@ fun StudioAppScreen() {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "با یک عکس حرفه‌ای، فروش آنلاین‌شاپ خود را چند برابر کنید. حذف کامل لوگو + کیفیت Ultra HD:",
+                        text = "با خرید هر یک از بسته‌های زیر، واترمارک به صورت کامل حذف شده و عکس‌ها با کیفیت اصلی ذخیره می‌شوند:",
                         color = Color(0xFFCCCCCC),
                         fontSize = 13.sp
                     )
-                    PricingCard("بسته استارتر (۱۵ عکس حرفه‌ای)", "۶۹,۰۰۰ تومان", false) {
-                        coins += 15
+                    PricingCard("بسته استارتر (۱۵ عکس + حذف واترمارک)", "۶۹,۰۰۰ تومان", false) {
+                        updateCoins(coins + 15, vipUpgrade = true)
                         showPaywall = false
                     }
-                    PricingCard("بسته پرفروش مغازه‌دار (۶۰ عکس + بدون لوگو)", "۱۸۹,۰۰۰ تومان", true) {
-                        coins += 60
+                    PricingCard("بسته پرفروش مغازه‌دار (۶۰ عکس + VIP)", "۱۸۹,۰۰۰ تومان", true) {
+                        updateCoins(coins + 60, vipUpgrade = true)
                         showPaywall = false
                     }
-                    PricingCard("اشتراک ویژه ادمین‌ها (۲۵۰ عکس در ماه)", "۳۹۰,۰۰۰ تومان", false) {
-                        coins += 250
+                    PricingCard("اشتراک ویژه ادمین‌ها (۲۵۰ عکس + VIP)", "۳۹۰,۰۰۰ تومان", false) {
+                        updateCoins(coins + 250, vipUpgrade = true)
                         showPaywall = false
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { showPaywall = false }) {
-                    Text("فعلاً نه", color = Color.Gray)
+                    Text("بستن", color = Color.Gray)
                 }
             }
         )
@@ -389,7 +522,7 @@ fun PricingCard(title: String, price: String, isPopular: Boolean, onClick: () ->
     ) {
         if (isPopular) {
             Text(
-                text = "🔥 پیشنهاد ویژه و به‌صرفه",
+                text = "🔥 پیشنهاد ویژه و پرفروش",
                 color = Color(0xFFF5B041),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold
@@ -401,8 +534,19 @@ fun PricingCard(title: String, price: String, isPopular: Boolean, onClick: () ->
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            Text(text = price, color = Color(0xFFF5B041), fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = price,
+                color = Color(0xFFF5B041),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
         }
     }
 }

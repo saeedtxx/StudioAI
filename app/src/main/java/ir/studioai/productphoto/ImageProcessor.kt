@@ -1,0 +1,192 @@
+package ir.studioai.productphoto
+
+import android.content.ContentValues
+import android.content.Context
+import android.graphics.*
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import android.util.Base64
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+object ImageProcessor {
+
+    // آدرس اختصاصی کلادفلر ورکر شما
+    private const val WORKER_URL = "https://studioai.saeedtx.workers.dev/"
+
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    // ۱. حذف پس‌زمینه عکس محصول با هوش مصنوعی گوگل (روی گوشی)
+    suspend fun removeBackground(context: Context, imageUri: Uri): Bitmap = withContext(Dispatchers.Default) {
+        val inputImage = InputImage.fromFilePath(context, imageUri)
+        val options = SubjectSegmenterOptions.Builder()
+            .enableForegroundBitmap()
+            .build()
+
+        val segmenter = SubjectSegmentation.getClient(options)
+        val result = segmenter.process(inputImage).await()
+
+        result.foregroundBitmap ?: throw Exception("محصولی در تصویر تشخیص داده نشد")
+    }
+
+    // ۲. دریافت دکور آتلیه‌ای از کلادفلر ورکر شما
+    suspend fun generateBackground(prompt: String, width: Int, height: Int): Bitmap = withContext(Dispatchers.IO) {
+        val jsonBody = JSONObject().apply {
+            put("prompt", prompt)
+            put("width", width)
+            put("height", height)
+        }.toString()
+
+        val request = Request.Builder()
+            .url(WORKER_URL)
+            .post(jsonBody.toRequestBody("application/json".toMediaType()))
+            .build()
+
+        val response = httpClient.newCall(request).execute()
+        if (!response.isSuccessful) {
+            throw Exception("خطا در ارتباط با سرور هوش مصنوعی: ${response.code}")
+        }
+
+        val contentType = response.header("Content-Type") ?: ""
+        val bytes = if (contentType.contains("application/json")) {
+            val bodyString = response.body?.string() ?: ""
+            val base64Image = JSONObject(bodyString).getString("imageBase64")
+            Base64.decode(base64Image, Base64.DEFAULT)
+        } else {
+            response.body?.bytes() ?: throw Exception("تصویری از سرور دریافت نشد")
+        }
+
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: throw Exception("خطا در پردازش تصویر دریافتی")
+    }
+
+    // ۳. ترکیب هوشمند محصول + سایه طبیعی استودیویی + پس‌زمینه + واترمارک
+    suspend fun composeStudioPhoto(
+        background: Bitmap,
+        foreground: Bitmap,
+        targetWidth: Int,
+        targetHeight: Int,
+        addWatermark: Boolean
+    ): Bitmap = withContext(Dispatchers.Default) {
+        val finalBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(finalBitmap)
+
+        // الف) رسم پس‌زمینه آتلیه
+        val scaledBg = Bitmap.createScaledBitmap(background, targetWidth, targetHeight, true)
+        canvas.drawBitmap(scaledBg, 0f, 0f, null)
+
+        // ب) تنظیم اندازه محصول (اشغال حدود ۶۸٪ از فضای کادر برای جلوه حرفه‌ای)
+        val maxProductWidth = targetWidth * 0.68f
+        val maxProductHeight = targetHeight * 0.68f
+        val scaleFactor = minOf(
+            maxProductWidth / foreground.width.toFloat(),
+            maxProductHeight / foreground.height.toFloat()
+        )
+
+        val prodWidth = (foreground.width * scaleFactor).toInt().coerceAtLeast(1)
+        val prodHeight = (foreground.height * scaleFactor).toInt().coerceAtLeast(1)
+        val scaledProduct = Bitmap.createScaledBitmap(foreground, prodWidth, prodHeight, true)
+
+        // قرارگیری محصول در مرکز افقی و کمی پایین‌تر از مرکز عمودی (روی میز/سکو)
+        val left = (targetWidth - prodWidth) / 2f
+        val top = (targetHeight - prodHeight) * 0.56f
+
+        // ج) رسم سایه تماس زیر محصول (Contact Shadow روی میز)
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(135, 0, 0, 0)
+            maskFilter = BlurMaskFilter(38f, BlurMaskFilter.Blur.NORMAL)
+        }
+        val shadowOval = RectF(
+            left + prodWidth * 0.1f,
+            top + prodHeight - (prodHeight * 0.07f),
+            left + prodWidth * 0.9f,
+            top + prodHeight + (prodHeight * 0.05f)
+        )
+        canvas.drawOval(shadowOval, shadowPaint)
+
+        // د) رسم سایه نرم پشت محصول برای عمق دادن به تصویر
+        val alphaShadow = scaledProduct.extractAlpha()
+        val dropShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(85, 0, 0, 0)
+            maskFilter = BlurMaskFilter(24f, BlurMaskFilter.Blur.NORMAL)
+        }
+        canvas.drawBitmap(alphaShadow, left, top + 14f, dropShadowPaint)
+
+        // هـ) رسم خود محصول با کیفیت اصلی
+        val productPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        canvas.drawBitmap(scaledProduct, left, top, productPaint)
+
+        // و) افزودن واترمارک (اگر کاربر نسخه رایگان است)
+        if (addWatermark) {
+            val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(170, 15, 15, 20)
+            }
+            val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.rgb(245, 176, 65)
+                textSize = targetWidth * 0.032f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+            val watermarkText = "ساخته شده با استودیو هوش مصنوعی"
+            val textWidth = textPaint.measureText(watermarkText)
+            val padH = 28f
+            val padV = 16f
+            val badgeRect = RectF(
+                24f,
+                targetHeight - 85f,
+                24f + textWidth + (padH * 2),
+                targetHeight - 24f
+            )
+            canvas.drawRoundRect(badgeRect, 20f, 20f, badgePaint)
+            canvas.drawText(watermarkText, 24f + padH, targetHeight - 44f, textPaint)
+        }
+
+        finalBitmap
+    }
+
+    // ۴. ذخیره تصویر نهایی در گالری گوشی کاربر
+    suspend fun saveToGallery(context: Context, bitmap: Bitmap): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val filename = "StudioAI_${System.currentTimeMillis()}.jpg"
+            val resolver = context.contentResolver
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/StudioAI")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+            }
+
+            val imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                ?: return@withContext false
+
+            resolver.openOutputStream(imageUri)?.use { outStream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 95, outStream)
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                contentValues.clear()
+                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(imageUri, contentValues, null, null)
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+}

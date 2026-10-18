@@ -49,11 +49,12 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.0")
 
-    // بارگذاری و نمایش تصاویر
+    // بارگذاری تصاویر
     implementation("io.coil-kt:coil-compose:2.6.0")
 
-    // هوش مصنوعی رایگان گوگل برای حذف پس‌زمینه روی گوشی (Subject Segmentation)
+    // هوش مصنوعی گوگل برای حذف پس‌زمینه روی گوشی
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.0")
 
     // ارتباط با Cloudflare Worker
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
