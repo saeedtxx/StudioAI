@@ -7,10 +7,13 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Base64
+import com.google.android.gms.common.moduleinstall.ModuleInstall
+import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -19,10 +22,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
 object ImageProcessor {
 
-    // آدرس اختصاصی کلادفلر ورکر شما
     private const val WORKER_URL = "https://studioai.saeedtx.workers.dev/"
 
     private val httpClient = OkHttpClient.Builder()
@@ -31,17 +34,73 @@ object ImageProcessor {
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    // ۱. حذف پس‌زمینه عکس محصول با هوش مصنوعی گوگل (روی گوشی)
+    // ۱. حذف پس‌زمینه (همراه با دانلود خودکار ماژول + پشتیبان برای Genymotion/Huawei)
     suspend fun removeBackground(context: Context, imageUri: Uri): Bitmap = withContext(Dispatchers.Default) {
         val inputImage = InputImage.fromFilePath(context, imageUri)
         val options = SubjectSegmenterOptions.Builder()
             .enableForegroundBitmap()
             .build()
-
         val segmenter = SubjectSegmentation.getClient(options)
-        val result = segmenter.process(inputImage).await()
 
-        result.foregroundBitmap ?: throw Exception("محصولی در تصویر تشخیص داده نشد")
+        try {
+            // بررسی و درخواست دانلود خودکار ماژول در صورت نبودن روی گوشی
+            val moduleInstallClient = ModuleInstall.getClient(context)
+            val areAvailable = moduleInstallClient.areModulesAvailable(segmenter).await()
+
+            if (!areAvailable.areModulesAvailable()) {
+                val installRequest = ModuleInstallRequest.newBuilder()
+                    .addApi(segmenter)
+                    .build()
+                moduleInstallClient.installModules(installRequest).await()
+
+                // صبر تا تکمیل دانلود اولیه ماژول (حداکثر ۱۲ ثانیه)
+                repeat(12) {
+                    delay(1000)
+                    val check = moduleInstallClient.areModulesAvailable(segmenter).await()
+                    if (check.areModulesAvailable()) return@repeat
+                }
+            }
+
+            val result = segmenter.process(inputImage).await()
+            result.foregroundBitmap ?: fallbackSmartCutout(context, imageUri)
+
+        } catch (e: Exception) {
+            // اگر روی Genymotion بدون GApps یا گوشی بدون سرویس گوگل بود، از دوربری داخلی استفاده کن
+            fallbackSmartCutout(context, imageUri)
+        }
+    }
+
+    // موتور دوربری پشتیبان (ویژه شبیه‌ساز Genymotion و گوشی‌های بدون Google Play)
+    private fun fallbackSmartCutout(context: Context, imageUri: Uri): Bitmap {
+        val stream = context.contentResolver.openInputStream(imageUri)
+            ?: throw Exception("خطا در خواندن فایل تصویر")
+        val original = BitmapFactory.decodeStream(stream)
+        stream.close()
+
+        val width = original.width
+        val height = original.height
+        val result = original.copy(Bitmap.Config.ARGB_8888, true)
+
+        val pixels = IntArray(width * height)
+        result.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        // تشخیص رنگ پس‌زمینه از گوشه‌های تصویر و حذف نرم آن (Chroma/Corner Keying)
+        val cornerColor = pixels[0]
+        val bgR = Color.red(cornerColor)
+        val bgG = Color.green(cornerColor)
+        val bgB = Color.blue(cornerColor)
+        val threshold = 48
+
+        for (i in pixels.indices) {
+            val c = pixels[i]
+            val diff = abs(Color.red(c) - bgR) + abs(Color.green(c) - bgG) + abs(Color.blue(c) - bgB)
+            if (diff < threshold) {
+                pixels[i] = Color.TRANSPARENT
+            }
+        }
+
+        result.setPixels(pixels, 0, width, 0, 0, width, height)
+        return result
     }
 
     // ۲. دریافت دکور آتلیه‌ای از کلادفلر ورکر شما
@@ -86,11 +145,9 @@ object ImageProcessor {
         val finalBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(finalBitmap)
 
-        // الف) رسم پس‌زمینه آتلیه
         val scaledBg = Bitmap.createScaledBitmap(background, targetWidth, targetHeight, true)
         canvas.drawBitmap(scaledBg, 0f, 0f, null)
 
-        // ب) تنظیم اندازه محصول (اشغال حدود ۶۸٪ از فضای کادر برای جلوه حرفه‌ای)
         val maxProductWidth = targetWidth * 0.68f
         val maxProductHeight = targetHeight * 0.68f
         val scaleFactor = minOf(
@@ -102,11 +159,10 @@ object ImageProcessor {
         val prodHeight = (foreground.height * scaleFactor).toInt().coerceAtLeast(1)
         val scaledProduct = Bitmap.createScaledBitmap(foreground, prodWidth, prodHeight, true)
 
-        // قرارگیری محصول در مرکز افقی و کمی پایین‌تر از مرکز عمودی (روی میز/سکو)
         val left = (targetWidth - prodWidth) / 2f
         val top = (targetHeight - prodHeight) * 0.56f
 
-        // ج) رسم سایه تماس زیر محصول (Contact Shadow روی میز)
+        // سایه تماس روی میز
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.argb(135, 0, 0, 0)
             maskFilter = BlurMaskFilter(38f, BlurMaskFilter.Blur.NORMAL)
@@ -119,7 +175,7 @@ object ImageProcessor {
         )
         canvas.drawOval(shadowOval, shadowPaint)
 
-        // د) رسم سایه نرم پشت محصول برای عمق دادن به تصویر
+        // سایه نرم پشت محصول
         val alphaShadow = scaledProduct.extractAlpha()
         val dropShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.argb(85, 0, 0, 0)
@@ -127,11 +183,11 @@ object ImageProcessor {
         }
         canvas.drawBitmap(alphaShadow, left, top + 14f, dropShadowPaint)
 
-        // هـ) رسم خود محصول با کیفیت اصلی
+        // رسم خود محصول
         val productPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         canvas.drawBitmap(scaledProduct, left, top, productPaint)
 
-        // و) افزودن واترمارک (اگر کاربر نسخه رایگان است)
+        // افزودن واترمارک نسخه رایگان
         if (addWatermark) {
             val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.argb(170, 15, 15, 20)
@@ -144,7 +200,6 @@ object ImageProcessor {
             val watermarkText = "ساخته شده با استودیو هوش مصنوعی"
             val textWidth = textPaint.measureText(watermarkText)
             val padH = 28f
-            val padV = 16f
             val badgeRect = RectF(
                 24f,
                 targetHeight - 85f,
@@ -158,7 +213,7 @@ object ImageProcessor {
         finalBitmap
     }
 
-    // ۴. ذخیره تصویر نهایی در گالری گوشی کاربر
+    // ۴. ذخیره تصویر در گالری
     suspend fun saveToGallery(context: Context, bitmap: Bitmap): Boolean = withContext(Dispatchers.IO) {
         try {
             val filename = "StudioAI_${System.currentTimeMillis()}.jpg"

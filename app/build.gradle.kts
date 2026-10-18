@@ -54,6 +54,7 @@ dependencies {
 
     // هوش مصنوعی گوگل برای حذف پس‌زمینه روی گوشی
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
+    implementation("com.google.android.gms:play-services-base:18.5.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.0")
 
     // ارتباط با Cloudflare Worker
