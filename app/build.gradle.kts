@@ -15,9 +15,22 @@ android {
         versionName = "1.0.0"
     }
 
+    signingConfigs {
+        create("release") {
+            val keystoreFile = file("release-keystore.jks")
+            if (keystoreFile.exists()) {
+                storeFile = keystoreFile
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "StudioAI123456"
+                keyAlias = System.getenv("KEY_ALIAS") ?: "studioai_key"
+                keyPassword = System.getenv("KEY_PASSWORD") ?: "StudioAI123456"
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = true
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -52,11 +65,14 @@ dependencies {
     // بارگذاری تصاویر
     implementation("io.coil-kt:coil-compose:2.6.0")
 
-    // هوش مصنوعی گوگل برای حذف پس‌زمینه روی گوشی
+    // هوش مصنوعی گوگل برای حذف پس‌زمینه + دانلودر خودکار ماژول
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
     implementation("com.google.android.gms:play-services-base:18.5.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.0")
 
     // ارتباط با Cloudflare Worker
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // کتابخانه رسمی پرداخت درون‌برنامه‌ای کافه بازار (پولکی)
+    implementation("com.github.cafebazaar.Poolakey:poolakey:2.2.0")
 }

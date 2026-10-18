@@ -19,16 +19,36 @@ jobs:
           java-version: "17"
           distribution: "temurin"
 
+      - name: Generate Signing Keystore for CafeBazaar
+        run: |
+          if [ ! -f app/release-keystore.jks ]; then
+            keytool -genkeypair -v \
+              -keystore app/release-keystore.jks \
+              -alias studioai_key \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass StudioAI123456 \
+              -keypass StudioAI123456 \
+              -dname "CN=StudioAI, OU=Mobile, O=StudioAI, L=Tehran, S=Tehran, C=IR"
+          fi
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: "8.7"
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+      - name: Build Debug & Signed Release APK
+        run: gradle assembleDebug assembleRelease --stacktrace
 
-      - name: Upload APK Artifact
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: StudioAI-Debug-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Signed Release APK (Ready for CafeBazaar)
+        uses: actions/upload-artifact@v4
+        with:
+          name: StudioAI-CafeBazaar-Release-APK
+          path: app/build/outputs/apk/release/app-release.apk

@@ -34,7 +34,6 @@ object ImageProcessor {
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    // ۱. حذف پس‌زمینه (همراه با دانلود خودکار ماژول + پشتیبان برای Genymotion/Huawei)
     suspend fun removeBackground(context: Context, imageUri: Uri): Bitmap = withContext(Dispatchers.Default) {
         val inputImage = InputImage.fromFilePath(context, imageUri)
         val options = SubjectSegmenterOptions.Builder()
@@ -43,7 +42,6 @@ object ImageProcessor {
         val segmenter = SubjectSegmentation.getClient(options)
 
         try {
-            // بررسی و درخواست دانلود خودکار ماژول در صورت نبودن روی گوشی
             val moduleInstallClient = ModuleInstall.getClient(context)
             val areAvailable = moduleInstallClient.areModulesAvailable(segmenter).await()
 
@@ -53,7 +51,6 @@ object ImageProcessor {
                     .build()
                 moduleInstallClient.installModules(installRequest).await()
 
-                // صبر تا تکمیل دانلود اولیه ماژول (حداکثر ۱۲ ثانیه)
                 repeat(12) {
                     delay(1000)
                     val check = moduleInstallClient.areModulesAvailable(segmenter).await()
@@ -65,12 +62,10 @@ object ImageProcessor {
             result.foregroundBitmap ?: fallbackSmartCutout(context, imageUri)
 
         } catch (e: Exception) {
-            // اگر روی Genymotion بدون GApps یا گوشی بدون سرویس گوگل بود، از دوربری داخلی استفاده کن
             fallbackSmartCutout(context, imageUri)
         }
     }
 
-    // موتور دوربری پشتیبان (ویژه شبیه‌ساز Genymotion و گوشی‌های بدون Google Play)
     private fun fallbackSmartCutout(context: Context, imageUri: Uri): Bitmap {
         val stream = context.contentResolver.openInputStream(imageUri)
             ?: throw Exception("خطا در خواندن فایل تصویر")
@@ -84,7 +79,6 @@ object ImageProcessor {
         val pixels = IntArray(width * height)
         result.getPixels(pixels, 0, width, 0, 0, width, height)
 
-        // تشخیص رنگ پس‌زمینه از گوشه‌های تصویر و حذف نرم آن (Chroma/Corner Keying)
         val cornerColor = pixels[0]
         val bgR = Color.red(cornerColor)
         val bgG = Color.green(cornerColor)
@@ -103,7 +97,6 @@ object ImageProcessor {
         return result
     }
 
-    // ۲. دریافت دکور آتلیه‌ای از کلادفلر ورکر شما
     suspend fun generateBackground(prompt: String, width: Int, height: Int): Bitmap = withContext(Dispatchers.IO) {
         val jsonBody = JSONObject().apply {
             put("prompt", prompt)
@@ -134,12 +127,12 @@ object ImageProcessor {
             ?: throw Exception("خطا در پردازش تصویر دریافتی")
     }
 
-    // ۳. ترکیب هوشمند محصول + سایه طبیعی استودیویی + پس‌زمینه + واترمارک
     suspend fun composeStudioPhoto(
         background: Bitmap,
         foreground: Bitmap,
         targetWidth: Int,
         targetHeight: Int,
+        promoBadgeText: String,
         addWatermark: Boolean
     ): Bitmap = withContext(Dispatchers.Default) {
         val finalBitmap = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
@@ -183,11 +176,32 @@ object ImageProcessor {
         }
         canvas.drawBitmap(alphaShadow, left, top + 14f, dropShadowPaint)
 
-        // رسم خود محصول
+        // رسم محصول
         val productPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         canvas.drawBitmap(scaledProduct, left, top, productPaint)
 
-        // افزودن واترمارک نسخه رایگان
+        // رسم برچسب فروشگاهی (در صورت انتخاب توسط فروشنده)
+        if (promoBadgeText.isNotBlank() && promoBadgeText != "بدون برچسب") {
+            val promoBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.rgb(231, 76, 60) // قرمز جذاب فروشگاهی
+                setShadowLayer(12f, 0f, 6f, Color.argb(120, 0, 0, 0))
+            }
+            val promoTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                textSize = targetWidth * 0.042f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+            val tWidth = promoTextPaint.measureText(promoBadgeText)
+            val padH = 36f
+            val badgeRight = targetWidth - 36f
+            val badgeLeft = badgeRight - tWidth - (padH * 2)
+            val promoRect = RectF(badgeLeft, 36f, badgeRight, 118f)
+
+            canvas.drawRoundRect(promoRect, 50f, 50f, promoBgPaint)
+            canvas.drawText(promoBadgeText, badgeLeft + padH, 90f, promoTextPaint)
+        }
+
+        // واترمارک نسخه رایگان
         if (addWatermark) {
             val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.argb(170, 15, 15, 20)
@@ -213,7 +227,6 @@ object ImageProcessor {
         finalBitmap
     }
 
-    // ۴. ذخیره تصویر در گالری
     suspend fun saveToGallery(context: Context, bitmap: Bitmap): Boolean = withContext(Dispatchers.IO) {
         try {
             val filename = "StudioAI_${System.currentTimeMillis()}.jpg"

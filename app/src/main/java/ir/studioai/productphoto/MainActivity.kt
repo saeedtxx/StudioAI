@@ -45,8 +45,14 @@ data class StudioPreset(
 )
 
 class MainActivity : ComponentActivity() {
+
+    private lateinit var billingManager: BazaarBillingManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        billingManager = BazaarBillingManager(this)
+        billingManager.initBilling()
+
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                 MaterialTheme(
@@ -56,15 +62,20 @@ class MainActivity : ComponentActivity() {
                         primary = Color(0xFFF5B041)
                     )
                 ) {
-                    StudioAppScreen()
+                    StudioAppScreen(billingManager)
                 }
             }
         }
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        billingManager.release()
+    }
 }
 
 @Composable
-fun StudioAppScreen() {
+fun StudioAppScreen(billingManager: BazaarBillingManager) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("studio_prefs", Context.MODE_PRIVATE) }
@@ -75,6 +86,7 @@ fun StudioAppScreen() {
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var resultBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var selectedAspectRatio by remember { mutableStateOf("۱:۱ پست اینستاگرام") }
+    var selectedPromoBadge by remember { mutableStateOf("بدون برچسب") }
     var showPaywall by remember { mutableStateOf(false) }
     var isProcessing by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
@@ -91,10 +103,15 @@ fun StudioAppScreen() {
             StudioPreset("wood", "میز چوب گردو", "ویژه کیف، کفش و ساعت", "warm dark walnut wooden table surface, cinematic studio lighting, cozy background", Color(0xFF6E2C00)),
             StudioPreset("nature", "برگ و قطرات آب", "ویژه آرایشی و بهداشتی", "natural stone podium with tropical green leaves, water droplets, fresh morning sunlight", Color(0xFF145A32)),
             StudioPreset("digikala", "سفید استاندارد", "ویژه دیجی‌کالا و باسلام", "pure clean white minimalist studio table background, soft commercial lighting", Color(0xFF424949)),
-            StudioPreset("neon", "نئون سایبرپانک", "ویژه گجت و موبایل", "dark sleek matte podium with purple and blue neon rim lighting, tech studio", Color(0xFF4A235A))
+            StudioPreset("neon", "نئون سایبرپانک", "ویژه گجت و موبایل", "dark sleek matte podium with purple and blue neon rim lighting, tech studio", Color(0xFF4A235A)),
+            StudioPreset("gold", "مخمل مشکی و طلا", "ویژه ساعت و اکسسوری", "black velvet podium with warm golden luxury lighting and sparkles", Color(0xFF5B4814))
         )
     }
     var selectedPreset by remember { mutableStateOf(presets.first()) }
+
+    val promoBadges = remember {
+        listOf("بدون برچسب", "🔥 فروش ویژه", "🚚 ارسال رایگان", "💎 تضمین کیفیت", "⚡ موجودی محدود")
+    }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -111,7 +128,7 @@ fun StudioAppScreen() {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -119,13 +136,13 @@ fun StudioAppScreen() {
                     Text(
                         text = "استودیو عکاسی هوش مصنوعی",
                         color = Color.White,
-                        fontSize = 18.sp,
+                        fontSize = 17.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = if (isVip) "✨ حساب VIP فعال (بدون واترمارک)" else "طراحی عکس محصول در چند ثانیه",
+                        text = if (isVip) "✨ اشتراک VIP فعال (بدون واترمارک)" else "تبدیل عکس معمولی به عکس تبلیغاتی",
                         color = if (isVip) Color(0xFFF5B041) else Color(0xFF9E9EAE),
-                        fontSize = 12.sp
+                        fontSize = 11.sp
                     )
                 }
 
@@ -145,7 +162,7 @@ fun StudioAppScreen() {
                         text = "🪙 $coins سکه | خرید VIP",
                         color = Color(0xFF0F0F14),
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 13.sp
+                        fontSize = 12.sp
                     )
                 }
             }
@@ -158,14 +175,14 @@ fun StudioAppScreen() {
                 .padding(horizontal = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // ۱. بوم نمایش محصول و نتیجه نهایی
+            // ۱. بوم نمایش تصویر
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .clip(RoundedCornerShape(24.dp))
+                    .clip(RoundedCornerShape(22.dp))
                     .background(Color(0xFF1C1C26))
-                    .border(1.dp, Color(0xFF2E2E3E), RoundedCornerShape(24.dp))
+                    .border(1.dp, Color(0xFF2E2E3E), RoundedCornerShape(22.dp))
                     .clickable(enabled = !isProcessing) { galleryLauncher.launch("image/*") },
                 contentAlignment = Alignment.Center
             ) {
@@ -195,19 +212,19 @@ fun StudioAppScreen() {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Box(
                                 modifier = Modifier
-                                    .size(72.dp)
+                                    .size(68.dp)
                                     .clip(CircleShape)
                                     .background(Color(0xFF282838)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text("📸", fontSize = 32.sp)
+                                Text("📸", fontSize = 30.sp)
                             }
-                            Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
                             Text(
                                 text = "انتخاب عکس محصول از گالری",
                                 color = Color.White,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
+                                fontSize = 15.sp
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
@@ -219,7 +236,6 @@ fun StudioAppScreen() {
                     }
                 }
 
-                // دکمه‌های شناور بالای تصویر
                 if (selectedImageUri != null && !isProcessing) {
                     Row(
                         modifier = Modifier
@@ -237,7 +253,7 @@ fun StudioAppScreen() {
                                     text = "👑 حذف واترمارک",
                                     color = Color(0xFF0F0F14),
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp,
+                                    fontSize = 11.sp,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                                 )
                             }
@@ -250,19 +266,18 @@ fun StudioAppScreen() {
                             Text(
                                 text = "عکس جدید",
                                 color = Color.White,
-                                fontSize = 12.sp,
+                                fontSize = 11.sp,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                             )
                         }
                     }
                 }
 
-                // لایه لودینگ مرحله‌به‌مرحله
                 if (isProcessing) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.8f)),
+                            .background(Color.Black.copy(alpha = 0.82f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -279,9 +294,9 @@ fun StudioAppScreen() {
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // ۲. انتخاب ابعاد استاندارد
+            // ۲. انتخاب ابعاد
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -291,39 +306,56 @@ fun StudioAppScreen() {
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .background(if (isSelected) Color(0xFF2E2E42) else Color(0xFF1C1C26))
                             .border(
                                 width = 1.dp,
                                 color = if (isSelected) Color(0xFFF5B041) else Color.Transparent,
-                                shape = RoundedCornerShape(12.dp)
+                                shape = RoundedCornerShape(10.dp)
                             )
                             .clickable(enabled = !isProcessing) { selectedAspectRatio = ratio }
-                            .padding(vertical = 10.dp),
+                            .padding(vertical = 8.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = ratio,
                             color = if (isSelected) Color(0xFFF5B041) else Color(0xFF9E9EAE),
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // ۳. لیست دکورهای آتلیه
-            Text(
-                text = "انتخاب دکور و نورپردازی آتلیه:",
-                color = Color.White,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Start)
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+            // ۳. انتخاب برچسب فروشگاهی (ویژه آنلاین‌شاپ‌ها)
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(promoBadges) { badge ->
+                    val isSelected = selectedPromoBadge == badge
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(if (isSelected) Color(0xFFE74C3C) else Color(0xFF1C1C26))
+                            .clickable(enabled = !isProcessing) { selectedPromoBadge = badge }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = badge,
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
 
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // ۴. لیست دکورهای آتلیه
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
@@ -332,24 +364,24 @@ fun StudioAppScreen() {
                     val isSelected = preset.id == selectedPreset.id
                     Column(
                         modifier = Modifier
-                            .width(135.dp)
-                            .clip(RoundedCornerShape(16.dp))
+                            .width(130.dp)
+                            .clip(RoundedCornerShape(14.dp))
                             .background(preset.previewColor)
                             .border(
                                 width = if (isSelected) 2.dp else 0.dp,
                                 color = if (isSelected) Color(0xFFF5B041) else Color.Transparent,
-                                shape = RoundedCornerShape(16.dp)
+                                shape = RoundedCornerShape(14.dp)
                             )
                             .clickable(enabled = !isProcessing) { selectedPreset = preset }
-                            .padding(12.dp)
+                            .padding(10.dp)
                     ) {
                         Text(
                             text = preset.title,
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
+                            fontSize = 12.sp
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = preset.subtitle,
                             color = Color.White.copy(alpha = 0.8f),
@@ -359,9 +391,9 @@ fun StudioAppScreen() {
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // ۴. دکمه‌های ساخت عکس و دانلود در گالری
+            // ۵. دکمه‌های ساخت و ذخیره
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -394,6 +426,7 @@ fun StudioAppScreen() {
                                         foreground = cutout,
                                         targetWidth = targetW,
                                         targetHeight = targetH,
+                                        promoBadgeText = selectedPromoBadge,
                                         addWatermark = !isVip
                                     )
 
@@ -414,8 +447,8 @@ fun StudioAppScreen() {
                     enabled = !isProcessing,
                     modifier = Modifier
                         .weight(1f)
-                        .height(54.dp),
-                    shape = RoundedCornerShape(16.dp),
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF5B041))
                 ) {
                     Text(
@@ -430,7 +463,6 @@ fun StudioAppScreen() {
                     )
                 }
 
-                // دکمه دانلود (وقتی عکس آماده شد نمایش داده می‌شود)
                 if (resultBitmap != null) {
                     Button(
                         onClick = {
@@ -444,8 +476,8 @@ fun StudioAppScreen() {
                             }
                         },
                         enabled = !isProcessing,
-                        modifier = Modifier.height(54.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ECC71))
                     ) {
                         Text(
@@ -458,11 +490,11 @@ fun StudioAppScreen() {
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 
-    // ۵. دیالوگ خرید اشتراک و سکه
+    // ۶. مودال خرید متصل به درگاه کافه بازار (پولکی)
     if (showPaywall) {
         AlertDialog(
             onDismissRequest = { showPaywall = false },
@@ -472,27 +504,33 @@ fun StudioAppScreen() {
                     text = "💎 ارتقا به استودیو VIP",
                     color = Color(0xFFF5B041),
                     fontWeight = FontWeight.ExtraBold,
-                    fontSize = 20.sp
+                    fontSize = 19.sp
                 )
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "با خرید هر یک از بسته‌های زیر، واترمارک به صورت کامل حذف شده و عکس‌ها با کیفیت اصلی ذخیره می‌شوند:",
+                        text = "با خرید هر بسته، واترمارک برای همیشه حذف شده و عکس‌ها با کیفیت Ultra HD ذخیره می‌شوند:",
                         color = Color(0xFFCCCCCC),
-                        fontSize = 13.sp
+                        fontSize = 12.sp
                     )
                     PricingCard("بسته استارتر (۱۵ عکس + حذف واترمارک)", "۶۹,۰۰۰ تومان", false) {
-                        updateCoins(coins + 15, vipUpgrade = true)
-                        showPaywall = false
+                        billingManager.startPurchase(BazaarBillingManager.SKU_STARTER_15, 15) { reward ->
+                            updateCoins(coins + reward, vipUpgrade = true)
+                            showPaywall = false
+                        }
                     }
                     PricingCard("بسته پرفروش مغازه‌دار (۶۰ عکس + VIP)", "۱۸۹,۰۰۰ تومان", true) {
-                        updateCoins(coins + 60, vipUpgrade = true)
-                        showPaywall = false
+                        billingManager.startPurchase(BazaarBillingManager.SKU_SHOP_60, 60) { reward ->
+                            updateCoins(coins + reward, vipUpgrade = true)
+                            showPaywall = false
+                        }
                     }
                     PricingCard("اشتراک ویژه ادمین‌ها (۲۵۰ عکس + VIP)", "۳۹۰,۰۰۰ تومان", false) {
-                        updateCoins(coins + 250, vipUpgrade = true)
-                        showPaywall = false
+                        billingManager.startPurchase(BazaarBillingManager.SKU_VIP_250, 250) { reward ->
+                            updateCoins(coins + reward, vipUpgrade = true)
+                            showPaywall = false
+                        }
                     }
                 }
             },
